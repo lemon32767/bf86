@@ -10,7 +10,7 @@ static int prg_len = 0;
 int main(int argc, char** argv) {
   // size in bytes of the assembly generated for each bf instruction. every other character is zero
   const char ins_sizes[256] = {
-    ['+'] = 2, ['-'] = 2, ['>'] = 1, ['<'] = 1, ['['] = 9, [']'] = 9, ['.'] = 16, [','] = 15
+    ['+'] = 2, ['-'] = 2, ['>'] = 1, ['<'] = 1, ['['] = 9, [']'] = 9, ['.'] = 8, [','] = 8
   };
   
   //for the elf header, essentially the size of the executable section (p_filesz + p_memsz)
@@ -50,23 +50,32 @@ int main(int argc, char** argv) {
   //initialize
   
   //obtaining memory buffer for the tape using mmap(2)
-  ASM("\xB8\xC0\0\0\0"); // mov  eax, $C0           ; eax = mmap2 Nr. = 0xC0
-  ASM("\x31\xDB");       // xor  ebx, ebx           ; ebx = addr = 0
-  ASM("\xB9\0\x78\0\0"); // mov  ecx, $4000         ; ecx = size = 0x7800 = 30 kB ~ 30_000 cells
-  ASM("\xBA\3\0\0\0");   // mov  edx, 3             ; edx = prot = 3 = PROT_READ | PROT_WRITE
-  ASM("\xBE\x22\0\0\0"); // mov  ESI, $22           ; esi = flags = 0x22 = MAP_ANONYMOUS | MAP_PRIVATE
-  ASM("\x31\xFF\x4F");   // xor  EDI,EDI :: dec EDI ; edi = fd = -1
-  ASM("\x31\xED");       // xor  EBP,EBP            ; ebp = off = 0
-  ASM("\xCD\x80");       // int  $80                ; syscall()
-
-  //now eax = tape pointer 
+  ASM("\xB8\xC0\0\0\0"); // mov  eax, $C0            ; eax = mmap2 Nr. = 0xC0
+  ASM("\x31\xDB");       // xor  ebx, ebx            ; ebx = addr = 0
+  ASM("\xB9\0\x78\0\0"); // mov  ecx, $4000          ; ecx = size = 0x7800 = 30 kB ~ 30_000 cells
+  ASM("\xBA\3\0\0\0");   // mov  edx, 3              ; edx = prot = 3 = PROT_READ | PROT_WRITE
+  ASM("\xBE\x22\0\0\0"); // mov  esi, $22            ; esi = flags = 0x22 = MAP_ANONYMOUS | MAP_PRIVATE
+  ASM("\x31\xFF\x4F");   // xor  edi,edi :: dec edi  ; edi = fd = -1
+  ASM("\x31\xED");       // xor  ebp,ebp             ; ebp = off = 0
+  ASM("\xCD\x80");       // int  $80                 ; syscall(). puts pointer to obtained memory in eax
+  
+  //some more setup stuff
+  ASM("\x89\xC1");  // mov  ecx, eax ; we want the tape pointer in ecx in order to pass it to write() and read() directly as the buf argument
+  ASM("\xB2\1");    // mov   dl, 1   ; dl is low byte of edx, and previously rdx = 3. so now edx = 1. this is the size argument for read() and write()
+  //ebx is now 0
+  //now for the read/write syscalls, we only need to do this:
+  // set eax fully (because read/write might set it to -1)
+  // set ebx (fd) to 0 or 1, can be done by only setting the lowest byte since ebx=0 now
+  // leave ecx as is (buf = tape pointer)
+  // leave edx as is (count = 1)
+  // int $80
   
   for (int i = 0; i < prg_len; i++) {
     switch (prg[i]) {
-      case '+': ASM("\xFE\0");  break; // inc  BYTE PTR [eax]  ; ++(*ptr)
-      case '-': ASM("\xFE\x8"); break; // dec  BYTE PTR [eax]  ; --(*ptr)
-      case '>': ASM("\x40");    break; // inc  eax             ; ++ptr
-      case '<': ASM("\x48");    break; // dec  eax             ; --ptr
+      case '+': ASM("\xFE\1");  break; // inc  BYTE PTR [ecx]  ; ++(*ptr)
+      case '-': ASM("\xFE\x9"); break; // dec  BYTE PTR [ecx]  ; --(*ptr)
+      case '>': ASM("\x41");    break; // inc  ecx             ; ++ptr
+      case '<': ASM("\x49");    break; // dec  ecx             ; --ptr
       case '[': {
         int bal, j, off = 0;
         for (bal = 1, j = i+1; bal != 0 && j < prg_len; j++) {
@@ -77,8 +86,8 @@ int main(int argc, char** argv) {
         }
         if (bal != 0) ERR("unbalanced bracket");
 
-        ASM("\x80\x38\x0");                          // CMP BYTE PTR [eax], 0  ; *ptr == 0 ? 
-        ASM("\xF\x84"), fwrite(&off, 4, 1, stdout);  // JZ  <offset>           ; if *ptr == 0 jump to matching ']'
+        ASM("\x80\x39\x0");                          // cmp BYTE PTR [ecx], 0  ; *ptr == 0 ? 
+        ASM("\xF\x84"), fwrite(&off, 4, 1, stdout);  // jz  <offset>           ; if *ptr == 0 jump to matching ']'
       } break;
       case ']': {
         int bal, j, off = -ins_sizes[(int)']'];
@@ -90,34 +99,26 @@ int main(int argc, char** argv) {
         }
         if (bal != 0) ERR("unbalanced bracket");
 
-        ASM("\x80\x38\x0");                          // CMP BYTE PTR [eax], 0  ; *ptr == 0 ? 
-        ASM("\xF\x85"), fwrite(&off, 4, 1, stdout);  // JNZ <offset>           ; if *ptr != 0 jump to matching '['
+        ASM("\x80\x39\x0");                          // cmp BYTE PTR [ecx], 0  ; *ptr == 0 ? 
+        ASM("\xF\x85"), fwrite(&off, 4, 1, stdout);  // jnz <offset>           ; if *ptr != 0 jump to matching '['
       } break;
       case '.':
         //execute `write' syscall
-        ASM("\x31\xDB\x43");    // xor  ebx, ebx :: inc ebx    ; ebx = fd = 1 = stdout
-        ASM("\x89\xC1");        // mov  ecx, eax               ; ecx = buf = ptr
-        ASM("\x31\xD2\x42");    // xor  edx, edx :: inc edx    ; edx = count = 1
-        ASM("\x50");            // push eax                    ; save eax
-        ASM("\x31\xC0\xB0\x4"); // xor  eax, eax :: mov AL, 4  ; eax = write Nr. = 4
-        ASM("\xCD\x80");        // int  $80                    ; syscall()
-        ASM("\x58");            // pop  eax                    ; restore eax
+        ASM("\x31\xC0\xB0\x4"); // xor  eax,eax :: mov al, 4  ; eax = write Nr. = 4
+        ASM("\xB3\1");          // mov  bl, 1                 ; ebx = stdout fd = 1
+        ASM("\xCD\x80");        // int  $80                   ; syscall()
         break;
       case ',':
         //execute `read' syscall
-        ASM("\x31\xDB");        // xor  ebx, ebx               ; ebx = fd = 0 = stdin
-        ASM("\x89\xC1");        // mov  ecx, eax               ; ecx = buf = ptr
-        ASM("\x31\xD2\x42");    // xor  edx, edx :: inc edx    ; edx = count = 1
-        ASM("\x50");            // push eax                    ; save eax
-        ASM("\x31\xC0\xB0\x3"); // xor  eax, eax :: mov AL, 3  ; eax = read Nr. = 3
-        ASM("\xCD\x80");        // int  $80                    ; syscall()
-        ASM("\x58");            // pop  eax                    ; restore eax
+        ASM("\x31\xC0\xB0\x3"); // xor  eax,eax :: mov al, 3  ; eax = write Nr. = 3
+        ASM("\xB3\0");          // mov  bl, 0                 ; ebx = stdin fd = 0
+        ASM("\xCD\x80");        // int  $80                   ; syscall()
         break;
     }
   }
 
   //and exit(0)
-  ASM("\xB8\x1\0\0\0"); // mov  eax, 1   ; eax = exit Nr. = 1
-  ASM("\x31\xDB");      // xor  ebx, ebx ; ebx = 0
-  ASM("\xCD\x80");      // int  $80      ; syscall()
+  ASM("\x31\xC0\x40");  // xor  eax,eax :: inc eax  ; eax = exit Nr. = 1
+  ASM("\x31\xDB");      // xor  ebx, ebx            ; ebx = exit code = 0
+  ASM("\xCD\x80");      // int  $80                 ; syscall()
 }

@@ -14,7 +14,7 @@ int main() {
       X('\v','v') X('\\','\\') X('\"','\"') X('?','?')
 #undef X
       default:
-        if (was_escape) printf("\"\"");
+        if (was_escape && isxdigit(c)) printf("\"\"");
         putchar(c);
       }
       was_escape = 0;
