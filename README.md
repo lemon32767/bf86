@@ -1,4 +1,5 @@
 # bf86
+[![](https://github.com/lemon-sherbet/bf86/workflows/CI/badge.svg)](https://github.com/lemon-sherbet/bf86/actions)
 
 A brainfuck -> x86 compiler (linux only).
 
