@@ -1,5 +1,5 @@
 #!/bin/sh
-make
+make || exit 1
 fail () {
   echo "TEST FAILED"
   exit 1
